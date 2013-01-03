@@ -12,64 +12,31 @@ from celery.registry import tasks
 
 from mixpanel.conf import settings as mp_settings
 
-class EventTracker(Task):
-    """
-    Task to track a Mixpanel event.
-    """
-    name = "mixpanel.tasks.EventTracker"
+class MixpanelMixin(object):
+
     max_retries = mp_settings.MIXPANEL_MAX_RETRIES
 
     class FailedEventRequest(Exception):
         """The attempted recording event failed because of a non-200 HTTP return code"""
         pass
 
-    def run(self, event_name, properties=None, token=None, test=None,
-            throw_retry_error=False, **kwargs):
-        """
-        Track an event occurrence to mixpanel through the API.
-
-        ``event_name`` is the string for the event/category you'd like to log
-        this event under
-        ``properties`` is (optionally) a dictionary of key/value pairs
-        describing the event.
-        ``token`` is (optionally) your Mixpanel api token. Not required if
-        you've already configured your MIXPANEL_API_TOKEN setting.
-        ``test`` is an optional override to your
-        `:data:mixpanel.conf.settings.MIXPANEL_TEST_ONLY` setting for determining
-        if the event requests should actually be stored on the Mixpanel servers.
-        """
+    def run(self, *args, **kwargs):
         l = self.get_logger(**kwargs)
-        l.info("Recording event: <%s>" % event_name)
-        if l.getEffectiveLevel() == logging.DEBUG:
-            httplib.HTTPConnection.debuglevel = 1
 
-        is_test = self._is_test(test)
-        generated_properties = self._handle_properties(properties, token)
-
-        url_params = self._build_params(event_name, generated_properties, is_test)
-        l.debug("url_params: <%s>" % url_params)
         conn = self._get_connection()
 
         try:
-            result = self._send_request(conn, url_params)
+            endpoint = self._get_endpoint()
+            result = self._send_request(conn, endpoint, self.url_params)
         except EventTracker.FailedEventRequest, exception:
             conn.close()
-            l.info("Event failed. Retrying: <%s>" % event_name)
-            kwargs.update({
-                'properties': properties,
-                'token': token,
-                'test': test})
-            self.retry(args=[event_name],
+            self.retry(args=args,
                        kwargs=kwargs,
                        exc=exception,
                        countdown=mp_settings.MIXPANEL_RETRY_DELAY,
                        throw=throw_retry_error)
             return
         conn.close()
-        if result:
-            l.info("Event recorded/logged: <%s>" % event_name)
-        else:
-            l.info("Event ignored: <%s>" % event_name)
 
         return result
 
@@ -106,18 +73,10 @@ class EventTracker(Task):
 
         return properties
 
-    def _get_connection(self):
-        server = mp_settings.MIXPANEL_API_SERVER
-
-        # Wish we could use python 2.6's httplib timeout support
-        socket.setdefaulttimeout(mp_settings.MIXPANEL_API_TIMEOUT)
-        return httplib.HTTPConnection(server)
-
-    def _build_params(self, event, properties, is_test):
+    def _build_params(self, params, is_test):
         """
         Build HTTP params to record the given event and properties.
         """
-        params = {'event': event, 'properties': properties}
         data = base64.b64encode(simplejson.dumps(params))
 
         data_var = mp_settings.MIXPANEL_DATA_VARIABLE
@@ -125,13 +84,19 @@ class EventTracker(Task):
 
         return url_params
 
-    def _send_request(self, connection, params):
+    def _get_connection(self):
+        server = mp_settings.MIXPANEL_API_SERVER
+
+        # Wish we could use python 2.6's httplib timeout support
+        socket.setdefaulttimeout(mp_settings.MIXPANEL_API_TIMEOUT)
+        return httplib.HTTPConnection(server)
+
+    def _send_request(self, connection, endpoint, params):
         """
         Send a an event with its properties to the api server.
 
         Returns ``true`` if the event was logged by Mixpanel.
         """
-        endpoint = mp_settings.MIXPANEL_TRACKING_ENDPOINT
         try:
             connection.request('GET', '%s?%s' % (endpoint, params))
 
@@ -148,15 +113,112 @@ class EventTracker(Task):
             return False
 
         return True
+    
+
+class EventTracker(MixpanelMixin, Task):
+    """
+    Task to track a Mixpanel event.
+    """
+    name = "mixpanel.tasks.EventTracker"
+
+    def run(self, event_name, distinct_id=None, ip=None, properties=None, token=None,
+            test=None, throw_retry_error=False, **kwargs):
+        """
+        Track an event occurrence to mixpanel through the API.
+
+        ``event_name`` is the string for the event/category you'd like to log
+        this event under
+        ``properties`` is (optionally) a dictionary of key/value pairs
+        describing the event.
+        ``token`` is (optionally) your Mixpanel api token. Not required if
+        you've already configured your MIXPANEL_API_TOKEN setting.
+        ``test`` is an optional override to your
+        `:data:mixpanel.conf.settings.MIXPANEL_TEST_ONLY` setting for determining
+        if the event requests should actually be stored on the Mixpanel servers.
+        """
+        l = self.get_logger(**kwargs)
+        if l.getEffectiveLevel() == logging.DEBUG:
+            httplib.HTTPConnection.debuglevel = 1
+        l.info("Recording event: <%s>" % event_name)
+
+        generated_properties = self._handle_properties(properties, token)
+        is_test = self._is_test(test)
+
+        params = {'event': event_name, 'properties': properties}
+        self.url_params = self._build_params(params, is_test)
+        l.debug("url_params: <%s>" % self.url_params)
+
+        result = super(EventTracker, self).run(event_name,
+                                               ip=ip,
+                                               distinct_id=distinct_id,
+                                               properties=properties,
+                                               token=token,
+                                               test=test,
+                                               throw_retry_error=throw_retry_error,
+                                               **kwargs)
+
+        if result:
+            l.info("Event recorded/logged: <%s>" % event_name)
+        else:
+            l.info("Event ignored: <%s>" % event_name)
+            if result is None:
+                l.info("Event failed. Retrying: <%s>" % event_name)
+        
+        return result
+
+    def _get_endpoint(self):
+        return mp_settings.MIXPANEL_TRACKING_ENDPOINT
 
 tasks.register(EventTracker)
+
+class UserTracker(MixpanelMixin, Task):
+
+    name = "mixpanel.tasks.UserTracker"
+    max_retries = mp_settings.MIXPANEL_MAX_RETRIES
+    
+    def run(self, distinct_id=None, ip=None, properties={}, token=None, add=False,
+            test=None, throw_retry_error=False, **kwargs):
+        is_test = self._is_test(test)
+
+        l = self.get_logger(**kwargs)
+        if l.getEffectiveLevel() == logging.DEBUG:
+            httplib.HTTPConnection.debuglevel = 1
+
+        if not distinct_id and not ip:
+            l.info("Cannot track without distinct_id or IP")
+            return False
+
+        if token is None:
+            token = mp_settings.MIXPANEL_API_TOKEN
+
+        action = '$add' if add is True else '$set'
+
+        params = {'$ip' : ip,
+                  '$distinct_id' : distinct_id,
+                  action : properties,
+                  '$token' : token}
+
+        self.url_params = self._build_params(params, is_test)
+
+        return super(UserTracker, self).run(distinct_id=distinct_id,
+                                            ip=ip,
+                                            properties=properties,
+                                            token=token,
+                                            add=add,
+                                            test=test,
+                                            throw_retry_error=throw_retry_error,
+                                            **kwargs)
+
+    def _get_endpoint(self):
+        return mp_settings.MIXPANEL_USER_ENDPOINT
+
+tasks.register(UserTracker)
 
 class FunnelEventTracker(EventTracker):
     """
     Task to track a Mixpanel funnel event.
     """
     name = "mixpanel.tasks.FunnelEventTracker"
-    max_retries = mp_settings.MIXPANEL_MAX_RETRIES
 
     class InvalidFunnelProperties(Exception):
         """Required properties were missing from the funnel-tracking call"""
