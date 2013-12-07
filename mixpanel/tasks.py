@@ -4,6 +4,8 @@ import base64
 import urlparse
 import logging
 import socket
+import datetime
+import json
 
 from django.utils import simplejson
 
@@ -24,7 +26,6 @@ class MixpanelMixin(object):
         l = self.get_logger(**kwargs)
 
         conn = self._get_connection()
-
         try:
             endpoint = self._get_endpoint()
             result = self._send_request(conn, endpoint, self.url_params)
@@ -175,8 +176,13 @@ class UserTracker(MixpanelMixin, Task):
 
     name = "mixpanel.tasks.UserTracker"
     max_retries = mp_settings.MIXPANEL_MAX_RETRIES
+    event_map = {
+        'set': '$set',
+        'add': '$increment',
+        'track_charge': '$append',
+    }
     
-    def run(self, distinct_id=None, ip=None, properties={}, token=None, add=False,
+    def run(self, event='set', distinct_id=None, ip=None, properties={}, token=None, add=False,
             test=None, throw_retry_error=False, **kwargs):
         is_test = self._is_test(test)
 
@@ -195,10 +201,9 @@ class UserTracker(MixpanelMixin, Task):
 
         params = {'$ip' : ip,
                   '$distinct_id' : distinct_id,
-                  action : properties,
                   '$token' : token}
 
-        self.url_params = self._build_params(params, is_test)
+        self.url_params = self._build_params(event, params, properties, is_test)
 
         return super(UserTracker, self).run(distinct_id=distinct_id,
                                             ip=ip,
@@ -208,6 +213,42 @@ class UserTracker(MixpanelMixin, Task):
                                             test=test,
                                             throw_retry_error=throw_retry_error,
                                             **kwargs)
+
+    def _build_params(self, event, params, properties, is_test):
+        """
+        Build HTTP params to record the given event and properties.
+        """
+        mp_key = self.event_map[event]
+
+        if event == 'track_charge':
+            time = properties.get('time', datetime.datetime.now().isoformat())
+            transactions = dict(
+                (k, v) for (k, v) in properties.iteritems()
+                if not k in ('token', 'distinct_id', 'amount')
+            )
+
+            transactions['$time'] = time
+            transactions['$amount'] = properties['amount']
+            params[mp_key] = {'$transactions': transactions}
+
+        else:
+            # strip token and distinct_id out of the properties and use the
+            # rest for passing with $set and $increment
+            params[mp_key] = dict(
+                (k, v) for (k, v) in properties.iteritems()
+                if not k in ('token', 'distinct_id')
+            )
+
+        return self._encode_params(params, is_test)
+
+    def _encode_params(self, params, is_test):
+        """
+        Encodes data and returns the urlencoded parameters
+        """
+        data = base64.b64encode(json.dumps(params))
+
+        data_var = mp_settings.MIXPANEL_DATA_VARIABLE
+        return urllib.urlencode({data_var: data, 'test': is_test})
 
     def _get_endpoint(self):
         return mp_settings.MIXPANEL_USER_ENDPOINT
