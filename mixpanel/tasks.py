@@ -1,7 +1,6 @@
 import httplib
 import urllib
 import base64
-import urlparse
 import logging
 import socket
 import datetime
@@ -14,7 +13,7 @@ from celery.registry import tasks
 
 from mixpanel.conf import settings as mp_settings
 
-class MixpanelMixin(object):
+class MixpanelTask(Task):
 
     max_retries = mp_settings.MIXPANEL_MAX_RETRIES
 
@@ -23,7 +22,6 @@ class MixpanelMixin(object):
         pass
 
     def run(self, *args, **kwargs):
-        l = self.get_logger(**kwargs)
 
         conn = self._get_connection()
         try:
@@ -35,7 +33,7 @@ class MixpanelMixin(object):
                        kwargs=kwargs,
                        exc=exception,
                        countdown=mp_settings.MIXPANEL_RETRY_DELAY,
-                       throw=throw_retry_error)
+                       throw=False)
             return
         conn.close()
 
@@ -114,9 +112,9 @@ class MixpanelMixin(object):
             return False
 
         return True
-    
 
-class EventTracker(MixpanelMixin, Task):
+
+class EventTracker(MixpanelTask):
     """
     Task to track a Mixpanel event.
     """
@@ -164,7 +162,7 @@ class EventTracker(MixpanelMixin, Task):
             l.info("Event ignored: <%s>" % event_name)
             if result is None:
                 l.info("Event failed. Retrying: <%s>" % event_name)
-        
+
         return result
 
     def _get_endpoint(self):
@@ -172,7 +170,7 @@ class EventTracker(MixpanelMixin, Task):
 
 tasks.register(EventTracker)
 
-class UserTracker(MixpanelMixin, Task):
+class UserTracker(MixpanelTask):
 
     name = "mixpanel.tasks.UserTracker"
     max_retries = mp_settings.MIXPANEL_MAX_RETRIES
@@ -181,7 +179,7 @@ class UserTracker(MixpanelMixin, Task):
         'add': '$increment',
         'track_charge': '$append',
     }
-    
+
     def run(self, event='set', distinct_id=None, ip=None, properties={}, token=None, add=False,
             test=None, throw_retry_error=False, **kwargs):
         is_test = self._is_test(test)
