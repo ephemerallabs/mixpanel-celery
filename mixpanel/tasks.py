@@ -140,7 +140,7 @@ class EventTracker(MixpanelTask):
             httplib.HTTPConnection.debuglevel = 1
         l.info("Recording event: <%s>" % event_name)
 
-        generated_properties = self._handle_properties(properties, token)
+        self._handle_properties(properties, token)
         is_test = self._is_test(test)
 
         params = {'event': event_name, 'properties': properties}
@@ -176,7 +176,7 @@ class UserTracker(MixpanelTask):
     max_retries = mp_settings.MIXPANEL_MAX_RETRIES
     event_map = {
         'set': '$set',
-        'add': '$increment',
+        'add': '$add',
         'track_charge': '$append',
     }
 
@@ -194,8 +194,6 @@ class UserTracker(MixpanelTask):
 
         if token is None:
             token = mp_settings.MIXPANEL_API_TOKEN
-
-        action = '$add' if add is True else '$set'
 
         params = {'$ip' : ip,
                   '$distinct_id' : distinct_id,
@@ -231,7 +229,7 @@ class UserTracker(MixpanelTask):
 
         else:
             # strip token and distinct_id out of the properties and use the
-            # rest for passing with $set and $increment
+            # rest for passing with $set and $add
             params[mp_key] = dict(
                 (k, v) for (k, v) in properties.iteritems()
                 if not k in ('token', 'distinct_id')
