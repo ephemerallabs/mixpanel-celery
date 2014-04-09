@@ -231,7 +231,7 @@ class UserTracker(MixpanelTask):
             # strip token and distinct_id out of the properties and use the
             # rest for passing with $set and $add
             params[mp_key] = dict(
-                (k, v) for (k, v) in properties.iteritems()
+                (k, (v.strftime('%Y-%m-%dT%H:%M:%S') if isinstance(v, datetime.datetime) else v)) for (k, v) in properties.iteritems()
                 if not k in ('token', 'distinct_id')
             )
 
